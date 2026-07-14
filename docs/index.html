@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>色分析 Color Analysis</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: #b7b7b7; color: #222;
+    max-width: 780px; margin: 0 auto; padding: 24px 16px 64px;
+  }
+  h1 { font-size: 1.5rem; letter-spacing: .08em; }
+  p.desc { font-size: .9rem; line-height: 1.7; }
+  fieldset {
+    border: 1px solid #888; background: #c9c9c9;
+    margin: 16px 0; padding: 16px;
+  }
+  legend { font-weight: bold; padding: 0 8px; }
+  label { display: block; margin: 10px 0 4px; font-size: .9rem; }
+  input[type="text"] {
+    width: 100%; box-sizing: border-box; padding: 8px;
+    border: 1px solid #888; background: #fff; font-size: 1rem;
+  }
+  input[type="file"] { margin-top: 4px; }
+  button {
+    font-size: 1rem; padding: 10px 24px; margin: 12px 8px 0 0;
+    border: 1px solid #444; background: #333; color: #fff; cursor: pointer;
+  }
+  button:disabled { background: #999; border-color: #999; cursor: default; }
+  button.secondary { background: #e8e8e8; color: #222; }
+  #log {
+    background: #1e1e1e; color: #9fdf9f; font-family: monospace;
+    font-size: .8rem; padding: 12px; margin-top: 16px;
+    height: 220px; overflow-y: auto; white-space: pre-wrap;
+  }
+  #download a {
+    display: inline-block; margin-top: 16px; padding: 12px 24px;
+    background: #2a6; color: #fff; text-decoration: none; font-weight: bold;
+  }
+  .note { font-size: .78rem; color: #555; line-height: 1.6; }
+</style>
+</head>
+<body>
+<h1>色分析 | Color Analysis</h1>
+<p class="desc">
+  画像をアップロードすると、RGB / HSV / CIE L*a*b* の色空間マッピング、
+  K平均法による代表色抽出、マンセル表色系へのマッピングを行い、
+  分析画像一式(サマリーシートPDF/PNG含む)をZIPでダウンロードできます。<br>
+  処理はすべてブラウザ内で実行され、<b>画像が外部に送信されることはありません</b>。
+</p>
+
+<fieldset>
+  <legend>作品情報</legend>
+  <label>氏名 (任意)</label>
+  <input type="text" id="student" placeholder="分析者の名前">
+  <label>作品タイトル (空欄の場合はファイル名)</label>
+  <input type="text" id="title" placeholder="例: Bauhaus Ausstellung, 50 Jahre">
+  <label>作家名 (任意)</label>
+  <input type="text" id="author" placeholder="例: Herbert Bayer">
+  <label>分析する画像 (複数選択可)</label>
+  <input type="file" id="files" accept="image/png,image/jpeg" multiple>
+</fieldset>
+
+<button id="run" disabled>準備中…</button>
+<button id="demo" class="secondary" disabled>デモ画像で試す</button>
+
+<div id="log">起動中…</div>
+<div id="download"></div>
+
+<p class="note">
+  初回はライブラリ(数十MB)の読み込みに1〜2分かかります。2回目以降はブラウザキャッシュにより高速化されます。<br>
+  RGB→マンセル変換は sRGB → CIE XYZ (D65) → 色順応変換(CAT02, D65→C光源) → xyY →
+  Munsell Renotation Data (ASTM D1535) の補間、という手順で行っています。
+</p>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+const logEl = document.getElementById("log");
+const runBtn = document.getElementById("run");
+const demoBtn = document.getElementById("demo");
+const dlEl = document.getElementById("download");
+
+function log(msg) {
+  logEl.textContent += "\n" + msg;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function tick() { return new Promise(r => setTimeout(r, 50)); } // DOM更新の猶予
+
+let pyodide = null;
+
+async function init() {
+  try {
+    logEl.textContent = "Pyodide を読み込み中…(初回は時間がかかります)";
+    pyodide = await loadPyodide();
+    log("パッケージを読み込み中… (numpy / scipy / matplotlib / OpenCV / Pillow)");
+    await pyodide.loadPackage(["numpy", "scipy", "matplotlib", "opencv-python", "pillow", "micropip"]);
+    log("colour-science をインストール中…");
+    await pyodide.runPythonAsync(`
+import micropip
+# Pyodide 0.26 は numpy 1.26 のため、numpy 1.x 対応の 0.4.4 を指定
+await micropip.install("colour-science==0.4.4")
+`);
+    log("日本語フォントを取得中…");
+    const fontResp = await fetch("https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/SubsetOTF/JP/NotoSansJP-Regular.otf");
+    pyodide.FS.mkdirTree("/fonts");
+    pyodide.FS.writeFile("/fonts/NotoSansJP-Regular.otf", new Uint8Array(await fontResp.arrayBuffer()));
+    log("分析モジュールを読み込み中…");
+    const code = await (await fetch("analysis.py?v=" + Date.now())).text();
+    pyodide.runPython(code);
+    pyodide.FS.mkdirTree("/input");
+    log("準備完了。画像を選んで「分析開始」を押してください。");
+    runBtn.textContent = "分析開始";
+    runBtn.disabled = false;
+    demoBtn.disabled = false;
+  } catch (e) {
+    log("エラー: " + e);
+  }
+}
+
+async function analyze(fileEntries) {
+  runBtn.disabled = true;
+  demoBtn.disabled = true;
+  dlEl.innerHTML = "";
+  const title = document.getElementById("title").value;
+  const author = document.getElementById("author").value;
+  const student = document.getElementById("student").value;
+  try {
+    pyodide.runPython(`
+import shutil, os
+shutil.rmtree("/out", ignore_errors=True)
+os.makedirs("/out", exist_ok=True)
+`);
+    const runAnalysis = pyodide.globals.get("run_analysis");
+    let i = 0;
+    for (const [name, bytes] of fileEntries) {
+      i++;
+      const path = "/input/" + name;
+      pyodide.FS.writeFile(path, bytes);
+      log(`[${i}/${fileEntries.length}] ${name} を分析中… (1〜3分ほどかかります)`);
+      await tick();
+      runAnalysis(path, "/out", title, author, student);
+      log(`[${i}/${fileEntries.length}] ${name} 完了`);
+      await tick();
+    }
+    log("ZIPを作成中…");
+    await tick();
+    pyodide.runPython(`
+import shutil
+shutil.make_archive("/result", "zip", "/out")
+`);
+    const zipBytes = pyodide.FS.readFile("/result.zip");
+    const blob = new Blob([zipBytes], { type: "application/zip" });
+    const url = URL.createObjectURL(blob);
+    dlEl.innerHTML = "";
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "color-analysis.zip";
+    a.textContent = "分析結果をダウンロード (ZIP)";
+    dlEl.appendChild(a);
+    log("完了。ダウンロードボタンからZIPを保存してください。");
+  } catch (e) {
+    log("エラー: " + e);
+  }
+  runBtn.disabled = false;
+  demoBtn.disabled = false;
+}
+
+runBtn.addEventListener("click", async () => {
+  const files = document.getElementById("files").files;
+  if (!files.length) { log("画像が選択されていません。"); return; }
+  const entries = [];
+  for (const f of files) {
+    entries.push([f.name, new Uint8Array(await f.arrayBuffer())]);
+  }
+  await analyze(entries);
+});
+
+demoBtn.addEventListener("click", async () => {
+  log("デモ画像を取得中…");
+  const resp = await fetch("sample.png");
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  await analyze([["sample.png", bytes]]);
+});
+
+init();
+</script>
+</body>
+</html>

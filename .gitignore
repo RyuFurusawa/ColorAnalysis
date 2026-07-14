@@ -1,0 +1,14 @@
+# 分析対象の画像 (人物写真・学生作品などを含むためリポジトリには入れない)
+/*.png
+/*.jpg
+/*.jpeg
+/*.PNG
+/*.JPG
+input-imgset/
+class/
+
+# 分析出力
+*color-analysis/
+
+.DS_Store
+__pycache__/
