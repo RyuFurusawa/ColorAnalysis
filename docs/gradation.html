@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>グラデーション分析 | Color Analysis</title>
+<style>
+  body {
+    font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: #b7b7b7; color: #222;
+    max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px;
+  }
+  h1 { font-size: 1.4rem; letter-spacing: .08em; }
+  p.desc { font-size: .9rem; line-height: 1.7; }
+  a.back { color: #234; font-size: .85rem; }
+  .controls { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, label.filebtn {
+    font-size: .95rem; padding: 8px 18px;
+    border: 1px solid #444; background: #333; color: #fff; cursor: pointer;
+  }
+  label.filebtn input { display: none; }
+  button.secondary, label.filebtn.secondary { background: #e8e8e8; color: #222; }
+  select { font-size: .95rem; padding: 6px; border: 1px solid #888; }
+  .checkbox { font-size: .9rem; }
+  #stage {
+    position: relative; display: flex; gap: 12px; align-items: flex-start;
+    background: #a5a5a5; border: 1px solid #888; padding: 12px; min-height: 400px;
+  }
+  #imgwrap { position: relative; flex: 0 0 auto; }
+  #imgcanvas { display: block; max-width: 340px; height: auto; cursor: crosshair;
+               border: 1px solid #666; background: #fff; }
+  #view3d { position: relative; flex: 1 1 auto; min-width: 420px; height: 560px; }
+  #view3d canvas { display: block; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+  #info {
+    margin-top: 10px; font-size: .88rem; background: #c9c9c9;
+    border: 1px solid #888; padding: 10px 14px; line-height: 1.8; min-height: 3em;
+  }
+  #info .swatch {
+    display: inline-block; width: 1.1em; height: 1.1em; vertical-align: -0.2em;
+    border: 1px solid #333; margin-right: 6px;
+  }
+  .note { font-size: .78rem; color: #555; line-height: 1.6; }
+</style>
+</head>
+<body>
+<a class="back" href="index.html">← 色分析(サマリーシート生成)へ戻る</a>
+<h1>グラデーション分析 | 色空間 3D マッピング</h1>
+<p class="desc">
+  画像の全画素を RGB 色空間 / HSV 色空間の3Dプロットにマッピングします。
+  <b>ドラッグで回転</b>、ホイールでズーム。
+  左の<b>画像をクリック</b>すると、その場所の色が色空間のどこに位置するかが線で結ばれて表示されます。
+</p>
+
+<div class="controls">
+  <label class="filebtn">画像を選ぶ<input type="file" id="file" accept="image/png,image/jpeg"></label>
+  <button class="secondary" id="demo">デモ画像で試す</button>
+  <select id="space">
+    <option value="rgb">RGB 色空間</option>
+    <option value="hsv">HSV 色空間</option>
+  </select>
+  <label class="checkbox"><input type="checkbox" id="autorot" checked> 自動回転</label>
+</div>
+
+<div id="stage">
+  <div id="imgwrap"><canvas id="imgcanvas" width="340" height="240"></canvas></div>
+  <div id="view3d"></div>
+  <canvas id="overlay"></canvas>
+</div>
+<div id="info">画像を読み込むとここに情報が表示されます。</div>
+<p class="note">
+  プロットは画像を幅120pxに縮小した全画素です。HSV の Hue は OpenCV と同じ 0–180 の値域で表示しています。
+</p>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const view = document.getElementById('view3d');
+const imgCanvas = document.getElementById('imgcanvas');
+const overlay = document.getElementById('overlay');
+const stage = document.getElementById('stage');
+const info = document.getElementById('info');
+
+// ---------- three.js セットアップ ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+view.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#9f9f9f');
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+camera.position.set(2.6, 1.8, 2.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.2;
+document.getElementById('autorot').addEventListener('change', e => {
+  controls.autoRotate = e.target.checked;
+});
+
+// 立方体の枠
+const box = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(2, 2, 2)),
+  new THREE.LineBasicMaterial({ color: 0x555555 }));
+scene.add(box);
+
+// 軸ラベル (Canvasテクスチャのスプライト)
+function textSprite(text) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.font = 'bold 40px sans-serif';
+  ctx.fillStyle = '#222';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true }));
+  sp.scale.set(0.9, 0.225, 1);
+  return sp;
+}
+const labels = new THREE.Group();
+scene.add(labels);
+function setAxisLabels(names) {
+  labels.clear();
+  const positions = [[1.45, -1.1, 0], [0, 1.35, 0], [0, -1.1, 1.45]];
+  names.forEach((name, i) => {
+    const sp = textSprite(name);
+    sp.position.set(...positions[i]);
+    labels.add(sp);
+  });
+}
+
+// 点群
+let points = null;
+let posRGB = null, posHSV = null, colorArr = null;
+let sampleW = 0, sampleH = 0, samplePix = null;
+
+function buildPoints() {
+  if (points) { scene.remove(points); points.geometry.dispose(); points.material.dispose(); }
+  const space = document.getElementById('space').value;
+  const pos = (space === 'rgb') ? posRGB : posHSV;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
+  const mat = new THREE.PointsMaterial({ size: 0.028, vertexColors: true });
+  points = new THREE.Points(geo, mat);
+  scene.add(points);
+  setAxisLabels(space === 'rgb' ? ['Red', 'Blue', 'Green'] : ['Hue', 'Value', 'Saturation']);
+  updateMarker();
+}
+document.getElementById('space').addEventListener('change', buildPoints);
+
+// 選択マーカー (クリックした色の位置)
+const marker = new THREE.Mesh(
+  new THREE.SphereGeometry(0.06, 24, 24),
+  new THREE.MeshBasicMaterial({ color: 0xffffff }));
+const markerRing = new THREE.Mesh(
+  new THREE.SphereGeometry(0.075, 24, 24),
+  new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true }));
+marker.visible = markerRing.visible = false;
+scene.add(marker, markerRing);
+
+let selected = null; // {index, imgX, imgY (imgCanvas内座標)}
+
+function rgb2hsv(r, g, b) { // OpenCV流: H 0-180, S/V 0-255
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d > 0) {
+    if (mx === r) h = 30 * ((g - b) / d);
+    else if (mx === g) h = 30 * ((b - r) / d) + 60;
+    else h = 30 * ((r - g) / d) + 120;
+    if (h < 0) h += 180;
+  }
+  const s = mx === 0 ? 0 : d / mx * 255;
+  return [h, s, mx];
+}
+
+function pointPos(index) {
+  const space = document.getElementById('space').value;
+  const pos = (space === 'rgb') ? posRGB : posHSV;
+  return new THREE.Vector3(pos[index * 3], pos[index * 3 + 1], pos[index * 3 + 2]);
+}
+
+function updateMarker() {
+  if (selected === null || !samplePix) { marker.visible = markerRing.visible = false; return; }
+  const p = pointPos(selected.index);
+  marker.position.copy(p);
+  markerRing.position.copy(p);
+  marker.visible = markerRing.visible = true;
+  const i = selected.index * 4;
+  marker.material.color.setRGB(samplePix[i] / 255, samplePix[i + 1] / 255, samplePix[i + 2] / 255);
+}
+
+// ---------- 画像読み込み ----------
+function loadImage(src) {
+  const img = new Image();
+  img.onload = () => {
+    // 表示用キャンバス
+    const dispW = 340;
+    const dispH = Math.round(dispW * img.height / img.width);
+    imgCanvas.width = dispW; imgCanvas.height = dispH;
+    imgCanvas.getContext('2d').drawImage(img, 0, 0, dispW, dispH);
+
+    // 分析用に縮小して全画素を取得
+    const w = 120;
+    const h = Math.max(1, Math.round(w * img.height / img.width));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+    samplePix = ctx.getImageData(0, 0, w, h).data;
+    sampleW = w; sampleH = h;
+
+    const n = w * h;
+    posRGB = new Float32Array(n * 3);
+    posHSV = new Float32Array(n * 3);
+    colorArr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const r = samplePix[i * 4], g = samplePix[i * 4 + 1], b = samplePix[i * 4 + 2];
+      // RGB立方体: x=R, y=B, z=G (matplotlibの見た目に近い配置)
+      posRGB[i * 3]     = r / 255 * 2 - 1;
+      posRGB[i * 3 + 1] = b / 255 * 2 - 1;
+      posRGB[i * 3 + 2] = g / 255 * 2 - 1;
+      const [hh, ss, vv] = rgb2hsv(r, g, b);
+      posHSV[i * 3]     = hh / 180 * 2 - 1;
+      posHSV[i * 3 + 1] = vv / 255 * 2 - 1;
+      posHSV[i * 3 + 2] = ss / 255 * 2 - 1;
+      colorArr[i * 3] = r / 255; colorArr[i * 3 + 1] = g / 255; colorArr[i * 3 + 2] = b / 255;
+    }
+    selected = null;
+    buildPoints();
+    info.textContent = '画像をクリックすると、その色の色空間内での位置が表示されます。';
+    resize();
+  };
+  img.src = src;
+}
+
+document.getElementById('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (f) loadImage(URL.createObjectURL(f));
+});
+document.getElementById('demo').addEventListener('click', () => loadImage('sample.png'));
+
+// ---------- 画像クリック → 色の位置を表示 ----------
+imgCanvas.addEventListener('click', e => {
+  if (!samplePix) return;
+  const rect = imgCanvas.getBoundingClientRect();
+  const px = (e.clientX - rect.left) / rect.width;
+  const py = (e.clientY - rect.top) / rect.height;
+  const sx = Math.min(sampleW - 1, Math.floor(px * sampleW));
+  const sy = Math.min(sampleH - 1, Math.floor(py * sampleH));
+  const index = sy * sampleW + sx;
+  selected = { index, fx: px, fy: py };
+  updateMarker();
+  const i = index * 4;
+  const r = samplePix[i], g = samplePix[i + 1], b = samplePix[i + 2];
+  const [hh, ss, vv] = rgb2hsv(r, g, b);
+  const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+  info.innerHTML =
+    `<span class="swatch" style="background:${hex}"></span>` +
+    `<b>${hex}</b> &nbsp; RGB (${r}, ${g}, ${b}) &nbsp; ` +
+    `HSV (${hh.toFixed(0)}, ${ss.toFixed(0)}, ${vv.toFixed(0)})`;
+});
+
+// ---------- 描画ループ (接続線はオーバーレイに描画) ----------
+const octx = overlay.getContext('2d');
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  overlay.width = stage.clientWidth;
+  overlay.height = stage.clientHeight;
+}
+window.addEventListener('resize', resize);
+
+function drawLink() {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (selected === null || !marker.visible) return;
+  const stageRect = stage.getBoundingClientRect();
+  const imgRect = imgCanvas.getBoundingClientRect();
+  const viewRect = renderer.domElement.getBoundingClientRect();
+  // 画像側の点
+  const x1 = imgRect.left - stageRect.left + selected.fx * imgRect.width;
+  const y1 = imgRect.top - stageRect.top + selected.fy * imgRect.height;
+  // 3D側の点をスクリーンに投影
+  const v = marker.position.clone().project(camera);
+  if (v.z > 1) return; // カメラ背後
+  const x2 = viewRect.left - stageRect.left + (v.x * 0.5 + 0.5) * viewRect.width;
+  const y2 = viewRect.top - stageRect.top + (-v.y * 0.5 + 0.5) * viewRect.height;
+
+  octx.lineWidth = 1.5;
+  octx.strokeStyle = '#111';
+  octx.setLineDash([6, 4]);
+  octx.beginPath();
+  octx.moveTo(x1, y1);
+  octx.lineTo(x2, y2);
+  octx.stroke();
+  octx.setLineDash([]);
+  // 画像側マーカー
+  octx.beginPath();
+  octx.arc(x1, y1, 6, 0, Math.PI * 2);
+  octx.stroke();
+  // 3D側マーカー
+  octx.beginPath();
+  octx.arc(x2, y2, 8, 0, Math.PI * 2);
+  octx.stroke();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+  drawLink();
+}
+resize();
+animate();
+</script>
+</body>
+</html>
