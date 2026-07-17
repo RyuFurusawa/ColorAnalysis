@@ -234,15 +234,10 @@ function buildPoints() {
 }
 document.getElementById('space').addEventListener('change', buildPoints);
 
-// 選択マーカー (クリックした色の位置)
-const marker = new THREE.Mesh(
-  new THREE.SphereGeometry(0.06, 24, 24),
-  new THREE.MeshBasicMaterial({ color: 0xffffff }));
-const markerRing = new THREE.Mesh(
-  new THREE.SphereGeometry(0.075, 24, 24),
-  new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true }));
-marker.visible = markerRing.visible = false;
-scene.add(marker, markerRing);
+// 選択マーカー: クリックした色の3D位置の参照点。
+// 3D空間には何も描画せず、オーバーレイ側でトレース色の輪だけを描く(画像側と同じ見た目)
+const marker = new THREE.Object3D();
+marker.visible = false;
 
 let selected = null; // {index, imgX, imgY (imgCanvas内座標)}
 
@@ -266,14 +261,9 @@ function pointPos(index) {
 }
 
 function updateMarker() {
-  if (selected === null || !samplePix) { marker.visible = markerRing.visible = false; return; }
-  const p = pointPos(selected.index);
-  marker.position.copy(p);
-  markerRing.position.copy(p);
-  marker.visible = markerRing.visible = true;
-  const i = selected.index * 4;
-  //sRGB指定で変換し、画面上の色が画像と一致するようにする
-  marker.material.color.setRGB(samplePix[i] / 255, samplePix[i + 1] / 255, samplePix[i + 2] / 255, THREE.SRGBColorSpace);
+  if (selected === null || !samplePix) { marker.visible = false; return; }
+  marker.position.copy(pointPos(selected.index));
+  marker.visible = true;
 }
 
 // ---------- 画像読み込み ----------
