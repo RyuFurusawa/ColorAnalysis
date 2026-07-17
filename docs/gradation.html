@@ -59,7 +59,8 @@
     <option value="rgb">RGB 色空間</option>
     <option value="hsv">HSV 色空間</option>
   </select>
-  <label class="checkbox"><input type="checkbox" id="autorot" checked> 自動回転</label>
+  <button class="secondary" id="rotbtn">静止</button>
+  <button class="secondary" id="savepng">PNG書き出し</button>
 </div>
 
 <div id="stage">
@@ -89,7 +90,7 @@ const stage = document.getElementById('stage');
 const info = document.getElementById('info');
 
 // ---------- three.js セットアップ ----------
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 view.appendChild(renderer.domElement);
 
@@ -100,8 +101,10 @@ camera.position.set(2.6, 1.8, 2.6);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.autoRotate = true;
 controls.autoRotateSpeed = 1.2;
-document.getElementById('autorot').addEventListener('change', e => {
-  controls.autoRotate = e.target.checked;
+const rotbtn = document.getElementById('rotbtn');
+rotbtn.addEventListener('click', () => {
+  controls.autoRotate = !controls.autoRotate;
+  rotbtn.textContent = controls.autoRotate ? '静止' : '回転';
 });
 
 // 立方体の枠
@@ -139,7 +142,7 @@ function setAxisLabels(names) {
 
 // 点群
 let points = null;
-let posRGB = null, posHSV = null, colorArr = null;
+let posRGB = null, posHSV = null, colorArr = null, sizeArr = null;
 let sampleW = 0, sampleH = 0, samplePix = null;
 
 function buildPoints() {
@@ -148,8 +151,31 @@ function buildPoints() {
   const pos = (space === 'rgb') ? posRGB : posHSV;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
-  const mat = new THREE.PointsMaterial({ size: 0.028, vertexColors: true });
+  geo.setAttribute('pcolor', new THREE.BufferAttribute(colorArr, 3));
+  geo.setAttribute('psize', new THREE.BufferAttribute(sizeArr, 1));
+  //カスタムシェーダ: 色空間変換を挟まず画像のsRGB値をそのまま出力し(色の忠実性)、
+  //点ごとのサイズ(面積比)を可変にする
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uScale: { value: renderer.getPixelRatio() * 2.8 } },
+    vertexShader: `
+      attribute vec3 pcolor;
+      attribute float psize;
+      uniform float uScale;
+      varying vec3 vColor;
+      void main() {
+        vColor = pcolor;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = psize * uScale / -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        if (dot(d, d) > 0.25) discard;
+        gl_FragColor = vec4(vColor, 1.0);
+      }`
+  });
   points = new THREE.Points(geo, mat);
   scene.add(points);
   setAxisLabels(space === 'rgb' ? ['Red', 'Blue', 'Green'] : ['Hue', 'Value', 'Saturation']);
@@ -195,7 +221,8 @@ function updateMarker() {
   markerRing.position.copy(p);
   marker.visible = markerRing.visible = true;
   const i = selected.index * 4;
-  marker.material.color.setRGB(samplePix[i] / 255, samplePix[i + 1] / 255, samplePix[i + 2] / 255);
+  //sRGB指定で変換し、画面上の色が画像と一致するようにする
+  marker.material.color.setRGB(samplePix[i] / 255, samplePix[i + 1] / 255, samplePix[i + 2] / 255, THREE.SRGBColorSpace);
 }
 
 // ---------- 画像読み込み ----------
@@ -234,6 +261,18 @@ function loadImage(src) {
       posHSV[i * 3 + 2] = ss / 255 * 2 - 1;
       colorArr[i * 3] = r / 255; colorArr[i * 3 + 1] = g / 255; colorArr[i * 3 + 2] = b / 255;
     }
+    //面積比(近い色の画素数)に応じた点サイズを計算。色を量子化して頻度を数える
+    const counts = new Map();
+    const keys = new Uint32Array(n);
+    for (let i = 0; i < n; i++) {
+      const key = (samplePix[i * 4] >> 4) << 8 | (samplePix[i * 4 + 1] >> 4) << 4 | (samplePix[i * 4 + 2] >> 4);
+      keys[i] = key;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    sizeArr = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      sizeArr[i] = 8 + 110 * Math.sqrt(counts.get(keys[i]) / n);
+    }
     selected = null;
     buildPoints();
     info.textContent = '画像をクリックすると、その色の色空間内での位置が表示されます。';
@@ -257,12 +296,12 @@ imgCanvas.addEventListener('click', e => {
   const sx = Math.min(sampleW - 1, Math.floor(px * sampleW));
   const sy = Math.min(sampleH - 1, Math.floor(py * sampleH));
   const index = sy * sampleW + sx;
-  selected = { index, fx: px, fy: py };
-  updateMarker();
   const i = index * 4;
   const r = samplePix[i], g = samplePix[i + 1], b = samplePix[i + 2];
   const [hh, ss, vv] = rgb2hsv(r, g, b);
   const hex = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+  selected = { index, fx: px, fy: py, hex };
+  updateMarker();
   info.innerHTML =
     `<span class="swatch" style="background:${hex}"></span>` +
     `<b>${hex}</b> &nbsp; RGB (${r}, ${g}, ${b}) &nbsp; ` +
@@ -296,23 +335,47 @@ function drawLink() {
   const x2 = viewRect.left - stageRect.left + (v.x * 0.5 + 0.5) * viewRect.width;
   const y2 = viewRect.top - stageRect.top + (-v.y * 0.5 + 0.5) * viewRect.height;
 
-  octx.lineWidth = 1.5;
-  octx.strokeStyle = '#111';
-  octx.setLineDash([6, 4]);
+  //細い実線で結ぶ
+  octx.lineWidth = 0.75;
+  octx.strokeStyle = '#333333';
   octx.beginPath();
   octx.moveTo(x1, y1);
   octx.lineTo(x2, y2);
   octx.stroke();
-  octx.setLineDash([]);
-  // 画像側マーカー
+  //両端の輪はトレースした対象の色で描画
+  octx.lineWidth = 2.5;
+  octx.strokeStyle = selected.hex;
   octx.beginPath();
   octx.arc(x1, y1, 6, 0, Math.PI * 2);
   octx.stroke();
-  // 3D側マーカー
   octx.beginPath();
-  octx.arc(x2, y2, 8, 0, Math.PI * 2);
+  octx.arc(x2, y2, 9, 0, Math.PI * 2);
   octx.stroke();
 }
+
+// ---------- PNG書き出し (画像+接続線+3Dビューを1枚に合成) ----------
+document.getElementById('savepng').addEventListener('click', () => {
+  if (!samplePix) return;
+  const scale = 2;
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const out = document.createElement('canvas');
+  out.width = W * scale; out.height = H * scale;
+  const ctx = out.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.fillStyle = '#a5a5a5';
+  ctx.fillRect(0, 0, W, H);
+  const sr = stage.getBoundingClientRect();
+  const ir = imgCanvas.getBoundingClientRect();
+  const vr = renderer.domElement.getBoundingClientRect();
+  ctx.drawImage(imgCanvas, ir.left - sr.left, ir.top - sr.top, ir.width, ir.height);
+  renderer.render(scene, camera);
+  ctx.drawImage(renderer.domElement, vr.left - sr.left, vr.top - sr.top, vr.width, vr.height);
+  ctx.drawImage(overlay, 0, 0, W, H);
+  const a = document.createElement('a');
+  a.download = 'gradation_' + document.getElementById('space').value + '.png';
+  a.href = out.toDataURL('image/png');
+  a.click();
+});
 
 function animate() {
   requestAnimationFrame(animate);
