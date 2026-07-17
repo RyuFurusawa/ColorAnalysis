@@ -151,10 +151,6 @@ function textSprite(text) {
   ctx.font = 'bold 40px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  //背景が暗くても読めるように白フチを付ける
-  ctx.lineWidth = 8;
-  ctx.strokeStyle = '#f0f0f0';
-  ctx.strokeText(text, 128, 32);
   ctx.fillStyle = '#222';
   ctx.fillText(text, 128, 32);
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -163,25 +159,19 @@ function textSprite(text) {
   return sp;
 }
 
-//黒(D)と白(W)の位置マーカー。色空間ごとに座標が変わる
+//黒(BK)と白(W)の位置ラベル。色空間ごとに座標が変わる
 const bwGroup = new THREE.Group();
 scene.add(bwGroup);
 function setBWMarkers(space) {
   bwGroup.clear();
   //RGB: 黒=(0,0,0)の頂点, 白=(255,255,255)の頂点 / HSV: 黒=V最小, 白=V最大・S最小
-  const posD = new THREE.Vector3(-1, -1, -1);
+  const posBK = new THREE.Vector3(-1, -1, -1);
   const posW = (space === 'rgb') ? new THREE.Vector3(1, 1, 1) : new THREE.Vector3(-1, 1, -1);
-  [[posD, 'D', 0x111111, 0xffffff], [posW, 'W', 0xffffff, 0x111111]].forEach(([p, txt, col, rim]) => {
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.04, 16, 16),
-                               new THREE.MeshBasicMaterial({ color: col }));
-    dot.position.copy(p);
-    const ring = new THREE.Mesh(new THREE.SphereGeometry(0.052, 12, 12),
-                                new THREE.MeshBasicMaterial({ color: rim, wireframe: true }));
-    ring.position.copy(p);
+  [[posBK, 'BK'], [posW, 'W']].forEach(([p, txt]) => {
     const sp = textSprite(txt);
     sp.scale.set(0.5, 0.125, 1);
-    sp.position.copy(p).add(new THREE.Vector3(0, 0.16, 0));
-    bwGroup.add(dot, ring, sp);
+    sp.position.copy(p).add(new THREE.Vector3(0, 0.1, 0));
+    bwGroup.add(sp);
   });
 }
 const labels = new THREE.Group();
