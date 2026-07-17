@@ -41,6 +41,14 @@
     border: 1px solid #333; margin-right: 6px;
   }
   .note { font-size: .78rem; color: #555; line-height: 1.6; }
+  #sliders {
+    display: flex; flex-wrap: wrap; gap: 24px; align-items: center;
+    margin-top: 10px; padding: 10px 14px;
+    background: #c9c9c9; border: 1px solid #888; font-size: .88rem;
+  }
+  #sliders label { display: flex; align-items: center; gap: 8px; }
+  #sliders input[type="range"] { width: 180px; }
+  #sliders .val { min-width: 3em; text-align: right; font-family: monospace; }
 </style>
 </head>
 <body>
@@ -67,6 +75,16 @@
   <div id="imgwrap"><canvas id="imgcanvas" width="340" height="240"></canvas></div>
   <div id="view3d"></div>
   <canvas id="overlay"></canvas>
+</div>
+<div id="sliders">
+  <label>点の大きさ
+    <input type="range" id="psizeSlider" min="0.1" max="3" step="0.05" value="1">
+    <span class="val" id="psizeVal">1.00</span>
+  </label>
+  <label>背景の明るさ
+    <input type="range" id="bgSlider" min="0" max="255" step="1" value="159">
+    <span class="val" id="bgVal">159</span>
+  </label>
 </div>
 <div id="info">画像を読み込むとここに情報が表示されます。</div>
 <p class="note">
@@ -105,6 +123,18 @@ const rotbtn = document.getElementById('rotbtn');
 rotbtn.addEventListener('click', () => {
   controls.autoRotate = !controls.autoRotate;
   rotbtn.textContent = controls.autoRotate ? '静止' : '回転';
+});
+
+// スライダー: 点の大きさ / 背景の明るさ
+document.getElementById('psizeSlider').addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  document.getElementById('psizeVal').textContent = v.toFixed(2);
+  if (points) points.material.uniforms.uSizeMul.value = v;
+});
+document.getElementById('bgSlider').addEventListener('input', e => {
+  const v = parseInt(e.target.value);
+  document.getElementById('bgVal').textContent = v;
+  scene.background.setRGB(v / 255, v / 255, v / 255, THREE.SRGBColorSpace);
 });
 
 // 立方体の枠
@@ -156,16 +186,20 @@ function buildPoints() {
   //カスタムシェーダ: 色空間変換を挟まず画像のsRGB値をそのまま出力し(色の忠実性)、
   //点ごとのサイズ(面積比)を可変にする
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uScale: { value: renderer.getPixelRatio() * 2.8 } },
+    uniforms: {
+      uScale: { value: renderer.getPixelRatio() * 2.8 },
+      uSizeMul: { value: parseFloat(document.getElementById('psizeSlider').value) }
+    },
     vertexShader: `
       attribute vec3 pcolor;
       attribute float psize;
       uniform float uScale;
+      uniform float uSizeMul;
       varying vec3 vColor;
       void main() {
         vColor = pcolor;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = psize * uScale / -mv.z;
+        gl_PointSize = psize * uSizeMul * uScale / -mv.z;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
